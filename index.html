@@ -386,7 +386,7 @@ async function syncNow(){
       S.settings = merged; changed = true;
     }
     if(Array.isArray(data.products) && data.products.length){ S.products = data.products; changed = true; }
-    if(Array.isArray(data.orders)){ S.orders = data.orders; changed = true; }
+    if(Array.isArray(data.orders) && data.orders.length){ S.orders = data.orders; changed = true; }
     if(changed) save();
     return changed;
   }catch(e){ return false; }
@@ -413,7 +413,7 @@ function intl(phone){
   if(d.startsWith('0') && cc) return cc + d.slice(1);
   return d;
 }
-const waLink = (num, text) => `https://wa.me/${String(num).replace(/\D/g,'')}?text=${encodeURIComponent(text)}`;
+const waLink = (num, text) => `https://wa.me/${intl(num)}?text=${encodeURIComponent(text)}`;
 
 function logoMark(size = 34){
   return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" role="img" aria-label="شعار ${esc(S.settings.name)}" xmlns="http://www.w3.org/2000/svg">
@@ -793,7 +793,7 @@ function orderDetailDlg(id){
     <div class="dlg-actions">
       <button class="btn btn-primary btn-sm" data-act="applyStatus" data-id="${o.id}">حفظ الحالة</button>
       <a class="btn btn-ghost btn-sm" href="tel:${esc(o.phone)}">اتصال</a>
-      ${s.whatsapp || true ? `<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="${waLink(o.phone, 'مرحبًا ' + o.name + '، بخصوص طلبك ' + o.id)}">واتساب للزبون</a>` : ''}
+      <a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="${waLink(o.phone, 'مرحبًا ' + o.name + '، بخصوص طلبك ' + o.id)}">واتساب للزبون</a>
       <button class="btn btn-danger btn-sm" data-act="delOrder" data-id="${o.id}">حذف الطلب</button>
       <button class="btn btn-ghost btn-sm" data-act="closeDialog">إغلاق</button>
     </div>`);
