@@ -386,7 +386,18 @@ async function syncNow(){
       S.settings = merged; changed = true;
     }
     if(Array.isArray(data.products) && data.products.length){ S.products = data.products; changed = true; }
-    if(Array.isArray(data.orders) && data.orders.length){ S.orders = data.orders; changed = true; }
+    if(Array.isArray(data.orders)){
+      const map = new Map(S.orders.map(o => [o.id, o]));
+      let touched = false;
+      data.orders.forEach(co => {
+        const lo = map.get(co.id);
+        if(!lo || JSON.stringify(lo) !== JSON.stringify(co)){ map.set(co.id, co); touched = true; }
+      });
+      if(touched){
+        S.orders = Array.from(map.values()).sort((a, b) => b.ts - a.ts);
+        changed = true;
+      }
+    }
     if(changed) save();
     return changed;
   }catch(e){ return false; }
