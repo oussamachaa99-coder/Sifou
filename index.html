@@ -343,6 +343,50 @@ function save(){
   catch(e){ toast('تعذّر حفظ البيانات في المتصفح. قد تكون المساحة ممتلئة أو التخزين معطّل.'); return false; }
 }
 
+/* ========== مزامنة سحابية عبر Google Apps Script (مشتركة بين كل الأجهزة) ========== */
+async function pushCloud(type, payload){
+  const u = S.settings.webhook; if(!u) return null;
+  try{
+    const r = await fetch(u, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({type, payload})});
+    return await r.json();
+  }catch(e){ return null; }
+}
+async function pullCloud(){
+  const u = S.settings.webhook; if(!u) return null;
+  try{
+    const sep = u.indexOf('?') > -1 ? '&' : '?';
+    const r = await fetch(u + sep + 't=' + Date.now());
+    return await r.json();
+  }catch(e){ return null; }
+}
+let syncing = false;
+async function syncNow(){
+  if(syncing) return false;
+  if(!S.settings.webhook) return false;
+  syncing = true;
+  try{
+    const data = await pullCloud();
+    if(!data || data.ok === false){ return false; }
+    if(data.settings == null && data.products == null){
+      await pushCloud('settings', S.settings);
+      await pushCloud('products', S.products);
+      return false;
+    }
+    let changed = false;
+    if(data.settings){
+      const base = seed();
+      const merged = Object.assign({}, base.settings, data.settings);
+      merged.fees = Object.assign(defaultFees(), data.settings.fees || {});
+      S.settings = merged; changed = true;
+    }
+    if(Array.isArray(data.products) && data.products.length){ S.products = data.products; changed = true; }
+    if(Array.isArray(data.orders)){ S.orders = data.orders; changed = true; }
+    if(changed) save();
+    return changed;
+  }catch(e){ return false; }
+  finally{ syncing = false; }
+}
+
 /* ========== أدوات ========== */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -605,20 +649,24 @@ function validateOrder(form){
   });
   return {d, e, ph};
 }
-function sendWebhook(o){
-  const u = S.settings.webhook; if(!u) return;
-  try{ fetch(u, {method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(o)}).catch(() => {}); }catch(e){}
-}
-function placeOrder(p, d, ph){
+async function placeOrder(p, d, ph){
   const qty = V.pv.qty, fee = S.settings.fees[d.wilaya][d.dtype];
   if(p.stock < qty){ toast('الكمية المتوفرة أقل من المطلوب.'); return null; }
-  const o = {
-    id:'A-' + (++S.seq), ts:Date.now(), pid:p.id, pname:p.name, variant:d.variant || '', qty, unit:p.price, fee,
+  const draft = {
+    ts:Date.now(), pid:p.id, pname:p.name, variant:d.variant || '', qty, unit:p.price, fee,
     total:p.price * qty + fee, name:d.name.trim(), phone:ph, wid:+d.wilaya, wilaya:wname(d.wilaya),
     commune:d.commune.trim(), address:d.dtype === 'home' ? d.address.trim() : '', dtype:d.dtype,
-    notes:(d.notes || '').trim(), status:'new'
+    notes:(d.notes || '').trim()
   };
-  p.stock -= qty; S.orders.unshift(o); save(); sendWebhook(o);
+  let id;
+  const res = S.settings.webhook ? await pushCloud('order', draft) : null;
+  if(res && res.ok && res.id){ id = res.id; }
+  else{
+    id = 'A-' + (++S.seq);
+    if(S.settings.webhook) toast('تعذّر الوصول للخادم، تم حفظ الطلب على هذا الجهاز فقط.');
+  }
+  const o = Object.assign({id, status:'new'}, draft);
+  p.stock -= qty; S.orders.unshift(o); save();
   return o;
 }
 function orderText(o){
@@ -717,7 +765,7 @@ function ordersHTML(){
   const filters = [['all','الكل'], ...Object.entries(STATUS).map(([k, v]) => [k, v[0]])];
   return `<h1>الطلبات</h1><p class="muted">${S.orders.length} طلب إجمالًا</p>
     <div class="tool"><div class="bar">${filters.map(([k, l]) => `<button class="chip" data-act="ofilter" data-v="${k}" aria-pressed="${V.ofilter === k}">${l}${k !== 'all' ? ` (${ordersCount(k)})` : ''}</button>`).join('')}</div>
-    <div class="tool-r"><input type="search" id="oq" placeholder="ابحث بالاسم أو الهاتف أو رقم الطلب" value="${esc(V.oq)}"><button class="btn btn-ghost btn-sm" data-act="exportCsv">تصدير CSV</button></div></div>
+    <div class="tool-r"><button class="btn btn-ghost btn-sm" data-act="refreshOrders">${ICO.check.replace('width="16" height="16"','width="15" height="15"')} تحديث</button><input type="search" id="oq" placeholder="ابحث بالاسم أو الهاتف أو رقم الطلب" value="${esc(V.oq)}"><button class="btn btn-ghost btn-sm" data-act="exportCsv">تصدير CSV</button></div></div>
     <div class="panel">${list.length ? list.map(orderRow).join('') : '<p class="empty">لا توجد طلبات مطابقة.</p>'}</div>`;
 }
 function orderDetailDlg(id){
@@ -829,6 +877,7 @@ async function saveProductForm(){
   }
   Object.assign(p, {name, cat, kind, price, old, stock, colors, features, desc, images:[...V.editImgs]});
   if(!save()) return;
+  await pushCloud('products', S.products);
   closeDialog(); renderApp(); toast('تم حفظ المنتج.');
 }
 
@@ -909,6 +958,7 @@ document.addEventListener('submit', async e => {
   if(e.target.id === 'loginForm'){
     e.preventDefault();
     const val = $('#lp').value;
+    await syncNow();
     if(val === S.settings.pin){
       authed = true; sessionStorage.setItem('ps_auth', '1'); V.adminTab = 'overview'; renderApp();
     }else{
@@ -923,7 +973,7 @@ document.addEventListener('submit', async e => {
     const {d, e:errs, ph} = validateOrder(e.target);
     if(Object.keys(errs).length){ $('.f.bad input,.f.bad select', e.target)[0]?.focus(); return; }
     const btn = $('#submitBtn'); btn.disabled = true; btn.textContent = 'جارٍ إرسال الطلب…';
-    const o = placeOrder(p, d, ph);
+    const o = await placeOrder(p, d, ph);
     btn.disabled = false; btn.textContent = 'اطلب الآن: الدفع عند الاستلام';
     if(!o) return;
     $('#order').innerHTML = `<h1>${esc(p.name)}</h1>` + successHTML(o);
@@ -977,38 +1027,44 @@ document.addEventListener('click', async e => {
     case 'closeScrim': if(e.target.classList.contains('scrim')) closeDialog(); break;
     case 'confirmYes': { const fn = pendingConfirm; closeDialog(); if(fn) fn(); break; }
     case 'logout': authed = false; sessionStorage.removeItem('ps_auth'); location.hash = '#/'; break;
-    case 'atab': V.adminTab = b.dataset.v; V.oq = ''; renderApp(); break;
+    case 'atab': {
+      V.adminTab = b.dataset.v; V.oq = ''; renderApp();
+      const changed = await syncNow(); if(changed) renderApp();
+      break;
+    }
     case 'ofilter': V.ofilter = b.dataset.v; renderApp(); break;
     case 'exportCsv': exportOrdersCsv(); break;
+    case 'refreshOrders': { toast('جارٍ التحديث…'); const changed = await syncNow(); renderApp(); toast(changed ? 'تم التحديث.' : 'لا توجد تغييرات جديدة.'); break; }
     case 'viewOrder': orderDetailDlg(b.dataset.id); break;
     case 'setStatus': {
       const o = S.orders.find(x => x.id === b.dataset.id);
-      if(o){ o.status = b.dataset.s; save(); renderApp(); toast('تم تحديث حالة الطلب.'); }
+      if(o){ o.status = b.dataset.s; save(); pushCloud('orderStatus', {id:o.id, status:o.status}); renderApp(); toast('تم تحديث حالة الطلب.'); }
       break;
     }
     case 'applyStatus': {
       const o = S.orders.find(x => x.id === b.dataset.id), sel = $('#stSel');
-      if(o && sel){ o.status = sel.value; save(); closeDialog(); renderApp(); toast('تم تحديث حالة الطلب.'); }
+      if(o && sel){ o.status = sel.value; save(); pushCloud('orderStatus', {id:o.id, status:o.status}); closeDialog(); renderApp(); toast('تم تحديث حالة الطلب.'); }
       break;
     }
-    case 'delOrder': confirmDlg('حذف الطلب', 'سيتم حذف هذا الطلب نهائيًا. هل تريد المتابعة؟', 'حذف', () => {
-      S.orders = S.orders.filter(x => x.id !== b.dataset.id); save(); renderApp(); toast('تم حذف الطلب.');
+    case 'delOrder': confirmDlg('حذف الطلب', 'سيتم حذف هذا الطلب نهائيًا من كل الأجهزة. هل تريد المتابعة؟', 'حذف', () => {
+      const id = b.dataset.id;
+      S.orders = S.orders.filter(x => x.id !== id); save(); pushCloud('deleteOrder', {id}); renderApp(); toast('تم حذف الطلب.');
     }); break;
     case 'newProduct': productDlg(null); break;
     case 'editProduct': productDlg(b.dataset.id); break;
-    case 'toggleActive': { const p = S.products.find(x => x.id === b.dataset.id); if(p){ p.active = !p.active; save(); renderApp(); } break; }
-    case 'delProduct': confirmDlg('حذف المنتج', 'سيتم حذف هذا المنتج نهائيًا من المتجر.', 'حذف', () => {
-      S.products = S.products.filter(x => x.id !== b.dataset.id); save(); renderApp(); toast('تم حذف المنتج.');
+    case 'toggleActive': { const p = S.products.find(x => x.id === b.dataset.id); if(p){ p.active = !p.active; save(); pushCloud('products', S.products); renderApp(); } break; }
+    case 'delProduct': confirmDlg('حذف المنتج', 'سيتم حذف هذا المنتج نهائيًا من كل الأجهزة.', 'حذف', () => {
+      S.products = S.products.filter(x => x.id !== b.dataset.id); save(); pushCloud('products', S.products); renderApp(); toast('تم حذف المنتج.');
     }); break;
     case 'rmImg': V.editImgs.splice(+b.dataset.i, 1); paintImgs(); break;
     case 'rmCat': {
       const cat = S.settings.cats[+b.dataset.i];
       if(S.products.some(p => p.cat === cat)){ toast('لا يمكن حذف تصنيف يحتوي على منتجات.'); break; }
-      S.settings.cats.splice(+b.dataset.i, 1); save(); renderApp(); break;
+      S.settings.cats.splice(+b.dataset.i, 1); save(); pushCloud('settings', S.settings); renderApp(); break;
     }
     case 'addCat': {
       const inp = $('#newCat'), v = inp.value.trim();
-      if(v && !S.settings.cats.includes(v)){ S.settings.cats.push(v); save(); renderApp(); }
+      if(v && !S.settings.cats.includes(v)){ S.settings.cats.push(v); save(); pushCloud('settings', S.settings); renderApp(); }
       break;
     }
     case 'saveSettings': {
@@ -1020,7 +1076,10 @@ document.addEventListener('click', async e => {
         cc: $('#sCc').value.trim(), pin: $('#sPin').value.trim() || S.settings.pin,
         webhook: $('#sHook').value.trim()
       });
-      save(); toast('تم حفظ الإعدادات.'); renderApp();
+      save();
+      const r = await pushCloud('settings', S.settings);
+      toast(r && r.ok ? 'تم حفظ الإعدادات وتحديثها على كل الأجهزة.' : 'تم الحفظ محليًا، لكن تعذّر رفعها للخادم.');
+      renderApp();
       break;
     }
     case 'saveFees': {
@@ -1028,7 +1087,9 @@ document.addEventListener('click', async e => {
         const id = inp.dataset.fee, t = inp.dataset.t;
         S.settings.fees[id][t] = Math.max(0, Math.round(+inp.value || 0));
       });
-      save(); toast('تم حفظ أسعار التوصيل.');
+      save();
+      const r = await pushCloud('settings', S.settings);
+      toast(r && r.ok ? 'تم حفظ أسعار التوصيل على كل الأجهزة.' : 'تم الحفظ محليًا، لكن تعذّر رفعها للخادم.');
       break;
     }
     case 'exportBackup': saveFile('نسخة-احتياطية.json', JSON.stringify(S, null, 2)); break;
@@ -1066,6 +1127,7 @@ document.addEventListener('keydown', e => {
 
 /* ========== الإقلاع ========== */
 route();
+syncNow().then(changed => { if(changed) route(); });
 </script>
 </body>
 </html>
