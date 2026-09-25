@@ -761,7 +761,7 @@ function overviewHTML(){
 
 /* ========== لوحة التحكم: الطلبات ========== */
 function orderRow(o){
-  const st = STATUS[o.status];
+  const st = STATUS[o.status] || ['غير معروف', '--muted'];
   const next = {new:'confirmed', confirmed:'shipped', shipped:'delivered'}[o.status];
   const nextLabel = {confirmed:'تأكيد', shipped:'شحن', delivered:'تسليم'}[next];
   return `<div class="orow"><b dir="ltr">${o.id}</b>
@@ -811,7 +811,7 @@ function orderDetailDlg(id){
 }
 function exportOrdersCsv(){
   const head = ['رقم الطلب','التاريخ','الاسم','الهاتف','الولاية','البلدية','العنوان','طريقة التوصيل','المنتج','الخيار','الكمية','سعر التوصيل','الإجمالي','الحالة'];
-  const rows = S.orders.map(o => [o.id, dt(o.ts), o.name, o.phone, o.wilaya, o.commune, o.address, o.dtype === 'home' ? 'منزل' : 'مكتب', o.pname, o.variant, o.qty, o.fee, o.total, STATUS[o.status][0]]);
+  const rows = S.orders.map(o => [o.id, dt(o.ts), o.name, o.phone, o.wilaya, o.commune, o.address, o.dtype === 'home' ? 'منزل' : 'مكتب', o.pname, o.variant, o.qty, o.fee, o.total, (STATUS[o.status] || ['غير معروف'])[0]]);
   const csv = '\ufeff' + [head, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
   saveFile('orders.csv', csv);
 }
